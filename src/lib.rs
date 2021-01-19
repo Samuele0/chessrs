@@ -1,17 +1,37 @@
-// (Lines like the one below ignore selected Clippy rules
-//  - it's useful when you want to check your code with `cargo make verify`
-// but some rules are too "annoying" or are not applicable for your case.)
 #![allow(clippy::wildcard_imports)]
-
+#![allow(unused_imports)] // TODO: Remove
+mod board;
+mod minimax;
+use board::*;
+use minimax::*;
 use seed::{prelude::*, *};
-
 // ------ ------
 //     Init
 // ------ ------
 
 // `init` describes what should happen when your app started.
 fn init(_: Url, _: &mut impl Orders<Msg>) -> Model {
-    Model::default()
+    Model {
+        board: Default::default(),
+        selected: None,
+    }
+}
+#[wasm_bindgen]
+extern "C" {
+    // Use `js_namespace` here to bind `console.log(..)` instead of just
+    // `log(..)`
+    #[wasm_bindgen(js_namespace = console)]
+    fn log(s: &str);
+
+    // The `console.log` is quite polymorphic, so we can bind it with multiple
+    // signatures. Note that we need to use `js_name` to ensure we always call
+    // `log` in JS.
+    #[wasm_bindgen(js_namespace = console, js_name = log)]
+    fn log_u32(a: u32);
+
+    // Multiple arguments too!
+    #[wasm_bindgen(js_namespace = console, js_name = log)]
+    fn log_many(a: &str, b: &str);
 }
 
 // ------ ------
@@ -19,7 +39,10 @@ fn init(_: Url, _: &mut impl Orders<Msg>) -> Model {
 // ------ ------
 
 // `Model` describes our app state.
-type Model = i32;
+struct Model {
+    board: ChessBoard,
+    selected: Option<(usize, usize)>,
+}
 
 // ------ ------
 //    Update
@@ -29,13 +52,52 @@ type Model = i32;
 #[derive(Copy, Clone)]
 // `Msg` describes the different events you can modify state with.
 enum Msg {
-    Increment,
+    Select(usize, usize),
+    EnemyMove(usize, usize, usize, usize),
 }
 
 // `update` describes how to handle each `Msg`.
-fn update(msg: Msg, model: &mut Model, _: &mut impl Orders<Msg>) {
+fn update(msg: Msg, model: &mut Model, o: &mut impl Orders<Msg>) {
     match msg {
-        Msg::Increment => *model += 1,
+        Msg::Select(x, y) => {
+            if let Some((x1, y1)) = model.selected {
+                if (x1, y1) == (x, y) {
+                    model.selected = None;
+                    return;
+                }
+                let piece = model.board.get(x1, y1);
+                if let Some(_p) = piece {
+                    /* if p.can_move(x, y) {
+                        model.board.make_move((x1, y1), (x, y));
+                        model.selected = None;
+                        return;
+                    } */
+                    if model.board.can_move(x1, y1, x, y) {
+                        model.board.make_move((x1, y1), (x, y));
+                        model.selected = None;
+                        o.perform_cmd({
+                            let clonedb= model.board.clone();
+                            async {
+                                let mov = maximize(clonedb, 0);
+                                Msg::EnemyMove(mov.start.0, mov.start.1, mov.end.0, mov.end.1)
+                            }
+                        });
+                        return;
+                    }
+                }
+            }
+            let piece = model.board.get(x, y);
+            if let Some(ChessPiece {
+                piece_color: PieceColor::White,
+                ..
+            }) = piece
+            {
+                model.selected = Some((x, y));
+            }
+        }
+        Msg::EnemyMove(x0, y0, x1, y1) => {
+            model.board.make_move((x0, y0), (x1, y1));
+        }
     }
 }
 
@@ -48,9 +110,45 @@ fn update(msg: Msg, model: &mut Model, _: &mut impl Orders<Msg>) {
 // `view` describes what to display.
 fn view(model: &Model) -> Node<Msg> {
     div![
-        "This is a counter: ",
-        C!["counter"],
-        button![model, ev(Ev::Click, |_| Msg::Increment),],
+        C!["container"],
+        table![
+            C!["chessboard"],
+            // Draw checkboard
+            (0..8).map(|i| {
+                tr![(0..8).map(|j| {
+                    td![
+                        C![if (i + j) % 2 == 0 { "white" } else { "black" }],
+                        C![if let Some((x, y)) = model.selected {
+                            if x == j && y == i {
+                                "selected"
+                            } else {
+                                ""
+                            }
+                        } else {
+                            ""
+                        },],
+                        ev(Ev::Click, move |_| Msg::Select(j, i))
+                    ]
+                })]
+            }),
+        ],
+        model.board.pieces.iter().map(|p| {
+            if p.position.is_some() {
+                div![
+                    C!["piece"],
+                    img![attrs! {
+                        At::Src => format!("./imgs/{}.svg",p)
+                    }],
+                    style![
+                        St::Position => "absolute",
+                        St::Top => format!("{}rem", p.position.unwrap().1*5),
+                        St::Left => format!("{}rem", p.position.unwrap().0*5),
+                    ]
+                ]
+            } else {
+                empty!()
+            }
+        })
     ]
 }
 
